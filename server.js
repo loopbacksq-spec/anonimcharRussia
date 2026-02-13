@@ -1,34 +1,47 @@
+// server.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = socketIo(server, {
+  cors: { origin: "*" } // важно для Render
+});
 
-// Отдаём статический HTML
 app.use(express.static('public'));
 
-// Генерация случайного цвета в HEX
-function getRandomColor() {
-  return '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
-}
-
-// Обработка подключения клиента
 io.on('connection', (socket) => {
-  const color = getRandomColor();
-  console.log('Новый пользователь подключился:', socket.id);
+  console.log('Пользователь подключился:', socket.id);
 
-  // При подключении отправляем его цвет клиенту
-  socket.emit('assignColor', color);
+  // Присоединение к комнате по ID
+  socket.on('joinRoom', (userId) => {
+    socket.join(userId);
+    console.log(`Пользователь ${socket.id} вошёл в комнату ${userId}`);
+  });
 
-  // Получаем сообщение от клиента
-  socket.on('chatMessage', (msg) => {
-    // Пересылаем всем остальным: текст + цвет отправителя
-    io.emit('newMessage', {
-      text: msg,
-      color: color
+  // Отправка сообщения в конкретную комнату (чат с другим ID)
+  socket.on('privateMessage', ({ fromId, toId, text }) => {
+    const room = [fromId, toId].sort().join('-'); // уникальное имя комнаты
+    socket.to(room).emit('receiveMessage', {
+      fromId,
+      text,
+      timestamp: Date.now()
     });
+    // Также отправляем себе (для отображения)
+    socket.emit('receiveMessage', {
+      fromId,
+      text,
+      timestamp: Date.now()
+    });
+    // Присоединяем обоих к комнате
+    socket.join(room);
+    // Найдём второй сокет и тоже добавим его (если онлайн)
+    const recipientSockets = Array.from(io.sockets.sockets.values())
+      .filter(s => s.rooms.has(toId));
+    if (recipientSockets.length > 0) {
+      recipientSockets[0].join(room);
+    }
   });
 
   socket.on('disconnect', () => {
