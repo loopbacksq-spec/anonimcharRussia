@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Анонимный чат</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: white;
+      margin: 0;
+      padding: 20px;
+    }
+    #chat {
+      height: 70vh;
+      overflow-y: auto;
+      border: 1px solid #444;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: #222;
+    }
+    #messageInput {
+      width: 80%;
+      padding: 10px;
+      font-size: 16px;
+    }
+    button {
+      width: 18%;
+      padding: 10px;
+      font-size: 16px;
+    }
+    .msg {
+      margin: 8px 0;
+      word-wrap: break-word;
+    }
+  </style>
+</head>
+<body>
+  <h2>Анонимный чат (все — разного цвета)</h2>
+  <div id="chat"></div>
+  <input type="text" id="messageInput" placeholder="Напиши сообщение..." maxlength="200" />
+  <button onclick="sendMessage()">Отправить</button>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const chat = document.getElementById('chat');
+    const input = document.getElementById('messageInput');
+
+    let myColor = '#ffffff';
+
+    socket.on('assignColor', (color) => {
+      myColor = color;
+      console.log('Твой цвет:', color);
+    });
+
+    socket.on('newMessage', (data) => {
+      const div = document.createElement('div');
+      div.className = 'msg';
+      div.innerHTML = `<strong style="color:${data.color}">Анонимный пользователь:</strong> ${this.escapeHtml(data.text)}`;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    });
+
+    function sendMessage() {
+      const text = input.value.trim();
+      if (text) {
+        socket.emit('chatMessage', text);
+        input.value = '';
+      }
+    }
+
+    input.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') sendMessage();
+    });
+
+    // Защита от XSS
+    this.escapeHtml = function(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    };
+  </script>
+</body>
+</html>
