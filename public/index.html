@@ -1,55 +1,250 @@
-// server.js
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-
-const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: { origin: "*" } // важно для Render
-});
-
-app.use(express.static('public'));
-
-io.on('connection', (socket) => {
-  console.log('Пользователь подключился:', socket.id);
-
-  // Присоединение к комнате по ID
-  socket.on('joinRoom', (userId) => {
-    socket.join(userId);
-    console.log(`Пользователь ${socket.id} вошёл в комнату ${userId}`);
-  });
-
-  // Отправка сообщения в конкретную комнату (чат с другим ID)
-  socket.on('privateMessage', ({ fromId, toId, text }) => {
-    const room = [fromId, toId].sort().join('-'); // уникальное имя комнаты
-    socket.to(room).emit('receiveMessage', {
-      fromId,
-      text,
-      timestamp: Date.now()
-    });
-    // Также отправляем себе (для отображения)
-    socket.emit('receiveMessage', {
-      fromId,
-      text,
-      timestamp: Date.now()
-    });
-    // Присоединяем обоих к комнате
-    socket.join(room);
-    // Найдём второй сокет и тоже добавим его (если онлайн)
-    const recipientSockets = Array.from(io.sockets.sockets.values())
-      .filter(s => s.rooms.has(toId));
-    if (recipientSockets.length > 0) {
-      recipientSockets[0].join(room);
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Анонимный мессенджер</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body {
+      background: #f5f7fb;
+      color: #333;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
-  });
 
-  socket.on('disconnect', () => {
-    console.log('Пользователь отключился:', socket.id);
-  });
-});
+    /* ID панель */
+    #idPanel {
+      background: #4a6cf7;
+      color: white;
+      padding: 12px;
+      text-align: center;
+      font-weight: bold;
+    }
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
-});
+    /* Поиск */
+    #searchBox {
+      padding: 12px;
+      display: flex;
+      gap: 8px;
+      background: white;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    #searchInput {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 16px;
+    }
+    #searchBtn {
+      background: #4a6cf7;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 16px;
+      cursor: pointer;
+    }
+
+    /* Чат */
+    #chatContainer {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: none; /* скрыт пока не начнётся чат */
+    }
+    .message {
+      margin-bottom: 12px;
+      max-width: 80%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      position: relative;
+      word-wrap: break-word;
+    }
+    .outgoing {
+      background: #e1ecff;
+      margin-left: auto;
+      border-bottom-right-radius: 4px;
+    }
+    .incoming {
+      background: #ebebeb;
+      margin-right: auto;
+      border-bottom-left-radius: 4px;
+    }
+    .time {
+      font-size: 11px;
+      color: #777;
+      text-align: right;
+      margin-top: 4px;
+    }
+
+    /* Ввод сообщения */
+    #inputBox {
+      padding: 12px;
+      display: none; /* скрыт пока не выбран собеседник */
+      gap: 8px;
+      background: white;
+      border-top: 1px solid #eee;
+    }
+    #messageInput {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #ccc;
+      border-radius: 20px;
+      font-size: 16px;
+    }
+    #sendBtn {
+      background: #4a6cf7;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 44px;
+      height: 44px;
+      font-size: 18px;
+      cursor: pointer;
+    }
+
+    /* Адаптив */
+    @media (max-width: 600px) {
+      .message { max-width: 90%; }
+    }
+  </style>
+</head>
+<body>
+  <div id="idPanel">Ваш ID: <span id="myId">—</span></div>
+
+  <div id="searchBox">
+    <input type="text" id="searchInput" placeholder="Введите 5-значный ID собеседника..." maxlength="5" pattern="[0-9]*" inputmode="numeric" />
+    <button id="searchBtn">Начать чат</button>
+  </div>
+
+  <div id="chatContainer"></div>
+
+  <div id="inputBox">
+    <input type="text" id="messageInput" placeholder="Напишите сообщение..." maxlength="200" />
+    <button id="sendBtn">➤</button>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let myId = localStorage.getItem('userId');
+    let currentChatId = null;
+
+    // Генерация 5-значного ID, если нет
+    if (!myId) {
+      myId = String(Math.floor(10000 + Math.random() * 90000)); // от 10000 до 99999
+      localStorage.setItem('userId', myId);
+    }
+    document.getElementById('myId').textContent = myId;
+
+    // Сохраняем чаты: ключ = "chat_12345", значение = массив сообщений
+    function saveMessage(chatId, msg) {
+      const key = `chat_${chatId}`;
+      const chats = JSON.parse(localStorage.getItem(key) || '[]');
+      chats.push(msg);
+      if (chats.length > 50) chats.shift(); // оставляем последние 50
+      localStorage.setItem(key, JSON.stringify(chats));
+    }
+
+    function loadMessages(chatId) {
+      const key = `chat_${chatId}`;
+      return JSON.parse(localStorage.getItem(key) || '[]');
+    }
+
+    function formatTime(timestamp) {
+      const d = new Date(timestamp);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function addMessageToUI(msg, isOutgoing) {
+      const container = document.getElementById('chatContainer');
+      const div = document.createElement('div');
+      div.className = `message ${isOutgoing ? 'outgoing' : 'incoming'}`;
+      div.innerHTML = `
+        <div>${msg.text}</div>
+        <div class="time">${formatTime(msg.timestamp)}</div>
+      `;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // Загрузка чата при выборе собеседника
+    function openChat(targetId) {
+      if (!/^\d{5}$/.test(targetId)) {
+        alert('ID должен быть из 5 цифр!');
+        return;
+      }
+      if (targetId === myId) {
+        alert('Нельзя писать самому себе!');
+        return;
+      }
+
+      currentChatId = targetId;
+      document.getElementById('chatContainer').style.display = 'block';
+      document.getElementById('inputBox').style.display = 'flex';
+
+      // Очистить и загрузить историю
+      document.getElementById('chatContainer').innerHTML = '';
+      const messages = loadMessages(targetId);
+      messages.forEach(msg => {
+        const isOutgoing = msg.fromId === myId;
+        addMessageToUI(msg, isOutgoing);
+      });
+    }
+
+    // Отправка
+    document.getElementById('sendBtn').onclick = sendMessage;
+    document.getElementById('messageInput').onkeypress = (e) => {
+      if (e.key === 'Enter') sendMessage();
+    };
+
+    function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const text = input.value.trim();
+      if (!text || !currentChatId) return;
+
+      const msg = {
+        fromId: myId,
+        toId: currentChatId,
+        text: escapeHtml(text),
+        timestamp: Date.now()
+      };
+
+      // Сохраняем локально
+      saveMessage(currentChatId, msg);
+      // Отображаем у себя
+      addMessageToUI(msg, true);
+      // Отправляем через сокет
+      socket.emit('privateMessage', msg);
+
+      input.value = '';
+    }
+
+    // Приём сообщений от других
+    socket.on('receiveMessage', (msg) => {
+      if (msg.fromId === myId) return; // свои уже есть
+
+      // Если чат с этим ID открыт — покажем
+      if (currentChatId === msg.fromId) {
+        addMessageToUI(msg, false);
+      }
+      // Всегда сохраняем
+      saveMessage(msg.fromId, msg);
+    });
+
+    // Кнопка "Начать чат"
+    document.getElementById('searchBtn').onclick = () => {
+      const id = document.getElementById('searchInput').value.trim();
+      openChat(id);
+    };
+
+    // Защита от XSS
+    function escapeHtml(text) {
+      const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+  </script>
+</body>
+</html>
