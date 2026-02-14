@@ -12,12 +12,10 @@ const wss = new WebSocket.Server({ server });
 const UPLOAD_DIR = path.join(__dirname, 'public', 'uploads');
 const DATA_FILE = path.join(__dirname, 'data.json');
 
-// Создаём папку uploads
 (async () => {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
 })();
 
-// Загружаем данные при старте
 let appData = { users: {}, chats: {} };
 loadData();
 
@@ -30,7 +28,6 @@ async function loadData() {
   }
 }
 
-// Сохраняем каждые 5 секунд
 setInterval(async () => {
   try {
     await fs.writeFile(DATA_FILE, JSON.stringify(appData, null, 2));
@@ -39,16 +36,19 @@ setInterval(async () => {
   }
 }, 5000);
 
-// Статика
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(UPLOAD_DIR));
 
-// Загрузка файлов
-app.use(express.raw({ type: '*/*', limit: '5MB' }));
-app.post('/upload', express.raw({ type: '*/*', limit: '5MB' }), async (req, res) => {
+app.use(express.raw({ type: '*/*', limit: '10MB' }));
+app.post('/upload', express.raw({ type: '*/*', limit: '10MB' }), async (req, res) => {
   try {
-    const contentType = req.get('Content-Type') || 'image/jpeg';
-    const ext = contentType.split('/')[1] || 'jpg';
+    const contentType = req.get('Content-Type') || 'application/octet-stream';
+    let ext = 'bin';
+    if (contentType.startsWith('image/')) {
+      ext = contentType.split('/')[1] || 'jpg';
+    } else if (contentType.startsWith('audio/')) {
+      ext = contentType.split('/')[1] || 'webm';
+    }
     const filename = `${uuidv4()}.${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
     await fs.writeFile(filepath, req.body);
@@ -59,7 +59,6 @@ app.post('/upload', express.raw({ type: '*/*', limit: '5MB' }), async (req, res)
   }
 });
 
-// Клиенты: socket → userId
 const clients = new Map();
 
 wss.on('connection', (ws) => {
@@ -67,7 +66,6 @@ wss.on('connection', (ws) => {
     try {
       const msg = JSON.parse(data.toString());
       switch (msg.type) {
-        // === РЕГИСТРАЦИЯ ===
         case 'register':
           const { nickname, password } = msg;
           if (!nickname || nickname.length < 3 || nickname.length > 20 || !password) {
@@ -81,7 +79,6 @@ wss.on('connection', (ws) => {
           appData.users[nickname] = { password, avatar: null };
           ws.send(JSON.stringify({ type: 'registered', nickname }));
 
-          // Оповестить всех онлайн о новом пользователе
           wss.clients.forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
               const clientId = clients.get(client);
@@ -92,7 +89,6 @@ wss.on('connection', (ws) => {
           });
           break;
 
-        // === ВХОД ===
         case 'login':
           const { nickname: loginNick, password: loginPass } = msg;
           const user = appData.users[loginNick];
@@ -112,14 +108,12 @@ wss.on('connection', (ws) => {
             avatar: user.avatar
           }));
 
-          // Отправить список всех пользователей (кроме себя)
           const allUsers = Object.keys(appData.users).filter(u => u !== loginNick);
           ws.send(JSON.stringify({ type: 'userList', users: allUsers }));
           break;
 
-        // === ОТПРАВКА СООБЩЕНИЯ ===
         case 'sendMessage':
-          const { to, text, image } = msg;
+          const { to, text, image, audio } = msg;
           const from = clients.get(ws);
           if (!from || !to) return;
           if (!appData.users[to]) {
@@ -133,16 +127,15 @@ wss.on('connection', (ws) => {
             to,
             text: text || null,
             image: image || null,
+            audio: audio || null,
             timestamp: Date.now()
           };
 
-          // Инициализация чатов
           if (!appData.chats[from]) appData.chats[from] = {};
           if (!appData.chats[to]) appData.chats[to] = {};
           if (!appData.chats[from][to]) appData.chats[from][to] = [];
           if (!appData.chats[to][from]) appData.chats[to][from] = [];
 
-          // Добавление сообщения (макс 20)
           appData.chats[from][to].push(message);
           appData.chats[to][from].push(message);
           if (appData.chats[from][to].length > 20) {
@@ -150,12 +143,10 @@ wss.on('connection', (ws) => {
             appData.chats[to][from] = appData.chats[to][from].slice(-20);
           }
 
-          // Отправка сообщения
           sendToUser(from, { type: 'newMessage', message });
           sendToUser(to, { type: 'newMessage', message });
           break;
 
-        // === ИСТОРИЯ ЧАТА ===
         case 'getChatHistory':
           const { with: peer } = msg;
           const requester = clients.get(ws);
@@ -170,7 +161,6 @@ wss.on('connection', (ws) => {
           }));
           break;
 
-        // === СМЕНА АВАТАРКИ ===
         case 'setAvatar':
           const { avatarUrl } = msg;
           const uid = clients.get(ws);
@@ -191,7 +181,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Вспомогательные функции
 function sendToUser(userId, payload) {
   for (const [client, nick] of clients.entries()) {
     if (nick === userId && client.readyState === WebSocket.OPEN) {
@@ -200,7 +189,6 @@ function sendToUser(userId, payload) {
   }
 }
 
-// Запуск
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`✅ Rose Messenger запущен на порту ${PORT}`);
