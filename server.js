@@ -12,12 +12,13 @@ const wss = new WebSocket.Server({ server });
 const UPLOAD_DIR = path.join(__dirname, 'public', 'uploads');
 const DATA_FILE = path.join(__dirname, 'data.json');
 
+// Создаём папку uploads
 (async () => {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
 })();
 
-// Загрузка данных
-let appData = { users: {}, chats: {} }; // chats: { userId: { [peerId]: [msg] } }
+// Загружаем данные при старте
+let appData = { users: {}, chats: {} }; // chats: { userId: { peerId: [msg] } }
 loadData();
 
 async function loadData() {
@@ -25,22 +26,25 @@ async function loadData() {
     const data = await fs.readFile(DATA_FILE, 'utf8');
     appData = JSON.parse(data);
   } catch (e) {
-    console.log('Нет сохранённых данных');
+    console.log('Создаём новую базу данных');
   }
 }
 
+// Сохраняем каждые 5 секунд
 setInterval(async () => {
   try {
     await fs.writeFile(DATA_FILE, JSON.stringify(appData, null, 2));
   } catch (e) {
     console.error('Ошибка сохранения:', e);
   }
-}, 10000);
+}, 5000);
 
+// Статика
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(UPLOAD_DIR));
-app.use(express.raw({ type: '*/*', limit: '5MB' }));
 
+// Загрузка файлов
+app.use(express.raw({ type: '*/*', limit: '5MB' }));
 app.post('/upload', express.raw({ type: '*/*', limit: '5MB' }), async (req, res) => {
   try {
     const contentType = req.get('Content-Type') || 'image/jpeg';
@@ -55,37 +59,49 @@ app.post('/upload', express.raw({ type: '*/*', limit: '5MB' }), async (req, res)
   }
 });
 
-const clients = new Map(); // socket → userId
+// Клиенты: socket → userId
+const clients = new Map();
 
 wss.on('connection', (ws) => {
   ws.on('message', async (data) => {
     try {
       const msg = JSON.parse(data.toString());
       switch (msg.type) {
+        // === РЕГИСТРАЦИЯ ===
         case 'register':
           const { nickname, password } = msg;
           if (!nickname || nickname.length < 3 || nickname.length > 20 || !password) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Неверные данные' }));
+            ws.send(JSON.stringify({ type: 'error', message: 'Ник (3–20) и пароль обязательны!' }));
             return;
           }
           if (appData.users[nickname]) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Ник занят!' }));
+            ws.send(JSON.stringify({ type: 'error', message: 'Этот ник уже занят!' }));
             return;
           }
           appData.users[nickname] = { password, avatar: null };
-          clients.set(ws, nickname);
           ws.send(JSON.stringify({ type: 'registered', nickname }));
           break;
 
+        // === ВХОД ===
         case 'login':
           const { nickname: loginNick, password: loginPass } = msg;
           const user = appData.users[loginNick];
-          if (!user || user.password !== loginPass) {
+          if (!user) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Пользователь не найден' }));
+            return;
+          }
+          if (user.password !== loginPass) {
             ws.send(JSON.stringify({ type: 'error', message: 'Неверный пароль' }));
             return;
           }
+          // Успешный вход
           clients.set(ws, loginNick);
-          ws.send(JSON.stringify({ type: 'loggedIn', nickname: loginNick, avatar: user.avatar }));
+          ws.send(JSON.stringify({
+            type: 'loggedIn',
+            nickname: loginNick,
+            avatar: user.avatar
+          }));
+
           // Отправляем список чатов пользователя
           const userChats = appData.chats[loginNick] || {};
           const chatList = Object.keys(userChats).map(peer => ({
@@ -95,28 +111,32 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'chatList', chats: chatList }));
           break;
 
+        // === ОТПРАВКА СООБЩЕНИЯ ===
         case 'sendMessage':
           const { to, text, image } = msg;
           const from = clients.get(ws);
-          if (!from || !to || !appData.users[to]) return;
+          if (!from || !to) return;
+          if (!appData.users[to]) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Получатель не найден' }));
+            return;
+          }
 
           const message = {
             id: uuidv4(),
             from,
             to,
-            text,
-            image,
+            text: text || null,
+            image: image || null,
             timestamp: Date.now()
           };
 
-          // Убедимся, что чат существует у обоих
+          // Инициализация чатов
           if (!appData.chats[from]) appData.chats[from] = {};
           if (!appData.chats[to]) appData.chats[to] = {};
-
           if (!appData.chats[from][to]) appData.chats[from][to] = [];
           if (!appData.chats[to][from]) appData.chats[to][from] = [];
 
-          // Добавляем сообщение (макс 20)
+          // Добавление сообщения (макс 20)
           appData.chats[from][to].push(message);
           appData.chats[to][from].push(message);
           if (appData.chats[from][to].length > 20) {
@@ -124,27 +144,16 @@ wss.on('connection', (ws) => {
             appData.chats[to][from] = appData.chats[to][from].slice(-20);
           }
 
-          // Отправляем обоим
+          // Отправка
           sendToUser(from, { type: 'newMessage', message });
           sendToUser(to, { type: 'newMessage', message });
 
-          // Обновляем списки чатов
-          sendToUser(from, {
-            type: 'chatList',
-            chats: Object.keys(appData.chats[from]).map(p => ({
-              peer: p,
-              lastMessage: appData.chats[from][p][appData.chats[from][p].length - 1]
-            }))
-          });
-          sendToUser(to, {
-            type: 'chatList',
-            chats: Object.keys(appData.chats[to]).map(p => ({
-              peer: p,
-              lastMessage: appData.chats[to][p][appData.chats[to][p].length - 1]
-            }))
-          });
+          // Обновление списков чатов
+          updateChatList(from);
+          updateChatList(to);
           break;
 
+        // === ИСТОРИЯ ЧАТА ===
         case 'getChatHistory':
           const { with: peer } = msg;
           const requester = clients.get(ws);
@@ -159,6 +168,7 @@ wss.on('connection', (ws) => {
           }));
           break;
 
+        // === СМЕНА АВАТАРКИ ===
         case 'setAvatar':
           const { avatarUrl } = msg;
           const uid = clients.get(ws);
@@ -169,7 +179,8 @@ wss.on('connection', (ws) => {
           break;
       }
     } catch (e) {
-      console.error(e);
+      console.error('Ошибка обработки сообщения:', e);
+      ws.send(JSON.stringify({ type: 'error', message: 'Серверная ошибка' }));
     }
   });
 
@@ -178,6 +189,7 @@ wss.on('connection', (ws) => {
   });
 });
 
+// Вспомогательные функции
 function sendToUser(userId, payload) {
   for (const [client, nick] of clients.entries()) {
     if (nick === userId && client.readyState === WebSocket.OPEN) {
@@ -186,7 +198,17 @@ function sendToUser(userId, payload) {
   }
 }
 
+function updateChatList(userId) {
+  if (!appData.chats[userId]) return;
+  const chatList = Object.keys(appData.chats[userId]).map(peer => ({
+    peer,
+    lastMessage: appData.chats[userId][peer][appData.chats[userId][peer].length - 1]
+  }));
+  sendToUser(userId, { type: 'chatList', chats: chatList });
+}
+
+// Запуск
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Rose Messenger запущен на порту ${PORT}`);
+  console.log(`✅ Rose Messenger запущен на порту ${PORT}`);
 });
