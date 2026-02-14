@@ -468,7 +468,7 @@
   <div class="screen chat-screen" id="chatScreen">
     <div class="chat-header">
       <button class="back-btn" onclick="showScreen('mainScreen')">←</button>
-      <div class="chat-avatar" id="currentChatAvatar" onclick="showContactProfile()">A</div>
+      <div class="chat-avatar" id="currentChatAvatar">A</div>
       <div class="chat-name" id="currentChatName">—</div>
     </div>
     <div class="messages" id="messagesBox">
@@ -575,12 +575,10 @@
     }
     createHearts();
 
-    // Глобальные переменные
     let ws;
     let currentUser = '';
     let currentChatUser = '';
 
-    // Подключение к WebSocket
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${window.location.host}`);
@@ -597,7 +595,7 @@
         const msg = JSON.parse(event.data);
         switch (msg.type) {
           case 'registered':
-            alert('✅ Регистрация успешна! Теперь войдите.');
+            alert('✅ Регистрация успешна!');
             showScreen('authScreen');
             break;
 
@@ -630,8 +628,12 @@
             if (isForCurrentChat) {
               appendMessage(msg.message);
             }
-            // Запросим обновлённый список чатов
-            ws.send(JSON.stringify({ type: 'login', nickname: currentUser, password: localStorage.getItem('rosePass') }));
+            // Обновить список чатов
+            requestChatList();
+            break;
+
+          case 'avatarUpdated':
+            updateAvatarDisplay('userProfileAvatar', currentUser, msg.avatar);
             break;
         }
       };
@@ -641,7 +643,6 @@
       };
     }
 
-    // Вход и регистрация
     function login() {
       const nick = document.getElementById('nickname').value.trim();
       const pass = document.getElementById('password').value;
@@ -662,7 +663,6 @@
       ws.send(JSON.stringify({ type: 'register', nickname: nick, password: pass }));
     }
 
-    // Список чатов (только с теми, с кем переписывались)
     function renderChatList(chats) {
       const list = document.getElementById('chatsList');
       list.innerHTML = '';
@@ -671,19 +671,16 @@
         return;
       }
       chats.forEach(item => {
-        const peer = item.peer;
-        const lastMsg = item.lastMessage;
-        const preview = lastMsg.image ? '[Фото]' : (lastMsg.text || '');
         const el = document.createElement('div');
         el.className = 'chat-item';
         el.innerHTML = `
-          <div class="avatar" id="avatar-${peer}">${peer[0].toUpperCase()}</div>
+          <div class="avatar">${item.peer[0].toUpperCase()}</div>
           <div class="chat-info">
-            <h3>${peer}</h3>
-            <p>${preview}</p>
+            <h3>${item.peer}</h3>
+            <p>${item.lastMessage.image ? '[Фото]' : (item.lastMessage.text || '')}</p>
           </div>
         `;
-        el.onclick = () => openChat(peer);
+        el.onclick = () => openChat(item.peer);
         list.appendChild(el);
       });
     }
@@ -697,7 +694,6 @@
       });
     }
 
-    // Открытие чата
     function openChat(user) {
       currentChatUser = user;
       document.getElementById('currentChatName').textContent = user;
@@ -706,7 +702,6 @@
       showScreen('chatScreen');
     }
 
-    // Обновление аватара
     function updateAvatarDisplay(elementId, user, avatarUrl) {
       const el = document.getElementById(elementId);
       if (avatarUrl) {
@@ -720,7 +715,6 @@
       }
     }
 
-    // Отображение сообщений
     function renderMessages(messages) {
       const box = document.getElementById('messagesBox');
       box.innerHTML = '';
@@ -742,7 +736,6 @@
       box.scrollTop = box.scrollHeight;
     }
 
-    // Отправка
     function sendMessage() {
       const input = document.getElementById('messageInput');
       const text = input.value.trim();
@@ -769,7 +762,6 @@
       input.click();
     }
 
-    // Смена аватара
     async function changeAvatar() {
       const input = document.createElement('input');
       input.type = 'file';
@@ -784,19 +776,16 @@
         });
         const { url } = await res.json();
         ws.send(JSON.stringify({ type: 'setAvatar', avatarUrl: url }));
-        updateAvatarDisplay('userProfileAvatar', currentUser, url);
       };
       input.click();
     }
 
-    // Профиль собеседника
     function showContactProfile() {
       document.getElementById('contactProfileName').textContent = currentChatUser;
       updateAvatarDisplay('contactProfileAvatar', currentChatUser, null);
       showScreen('contactProfileScreen');
     }
 
-    // Навигация
     function showScreen(screenId) {
       document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
       document.getElementById(screenId).classList.add('active');
@@ -812,7 +801,13 @@
       setTimeout(connectWebSocket, 1000);
     }
 
-    // Запуск
+    function requestChatList() {
+      const pass = localStorage.getItem('rosePass');
+      if (currentUser && pass) {
+        ws.send(JSON.stringify({ type: 'login', nickname: currentUser, password: pass }));
+      }
+    }
+
     window.onload = () => {
       connectWebSocket();
     };
