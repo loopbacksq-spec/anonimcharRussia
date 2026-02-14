@@ -20,12 +20,39 @@
       --shadow: 0 4px 20px rgba(255, 59, 95, 0.2);
     }
 
+    :root[data-theme="dark"] {
+      --rose-red: #ff4d7a;
+      --rose-light: #2a2a2e;
+      --rose-white: #1e1e1e;
+      --rose-gray: #2d2d30;
+    }
+
+    :root[data-theme="purple"] {
+      --rose-red: #a64dff;
+      --rose-light: #f0e6ff;
+      --rose-white: #ffffff;
+      --rose-gray: #f8f4ff;
+    }
+
+    :root[data-theme="coder"] {
+      --rose-red: #00ff9d;
+      --rose-light: #0d0d0d;
+      --rose-white: #000000;
+      --rose-gray: #1a1a1a;
+      font-family: 'Courier New', monospace;
+    }
+
     body {
       background: var(--rose-white);
       color: #333;
       overflow: hidden;
       height: 100vh;
       position: relative;
+    }
+
+    body[data-theme="dark"],
+    body[data-theme="coder"] {
+      color: #e0e0e0;
     }
 
     /* === ФОН С СЕРДЕЧКАМИ === */
@@ -98,6 +125,11 @@
       color: #333;
     }
 
+    [data-theme="dark"] .header-title,
+    [data-theme="coder"] .header-title {
+      color: #e0e0e0;
+    }
+
     /* === РЕГИСТРАЦИЯ === */
     .auth-screen {
       justify-content: center;
@@ -125,6 +157,8 @@
       font-size: 16px;
       outline: none;
       transition: border-color 0.3s;
+      background: var(--rose-white);
+      color: inherit;
     }
 
     .input-group input:focus {
@@ -181,6 +215,7 @@
       border-radius: 14px;
       font-size: 16px;
       outline: none;
+      color: inherit;
     }
 
     .chats-list {
@@ -231,6 +266,11 @@
       color: #888;
     }
 
+    [data-theme="dark"] .chat-info p,
+    [data-theme="coder"] .chat-info p {
+      color: #aaa;
+    }
+
     /* === ЧАТ-ЭКРАН === */
     .chat-screen {
       display: flex;
@@ -244,6 +284,11 @@
       padding: 12px 0;
       margin-bottom: 16px;
       border-bottom: 1px solid #eee;
+    }
+
+    [data-theme="dark"] .chat-header,
+    [data-theme="coder"] .chat-header {
+      border-bottom: 1px solid #444;
     }
 
     .chat-avatar {
@@ -315,6 +360,11 @@
       margin-top: 6px;
     }
 
+    .message audio {
+      width: 100%;
+      margin-top: 6px;
+    }
+
     .input-area {
       display: flex;
       gap: 10px;
@@ -322,7 +372,12 @@
       border-top: 1px solid #eee;
     }
 
-    .attach-btn, .send-btn {
+    [data-theme="dark"] .input-area,
+    [data-theme="coder"] .input-area {
+      border-top: 1px solid #444;
+    }
+
+    .attach-btn, .send-btn, .voice-btn, .call-btn {
       width: 44px;
       height: 44px;
       border-radius: 50%;
@@ -336,8 +391,20 @@
       transition: background 0.3s;
     }
 
-    .attach-btn:hover {
+    .attach-btn:hover,
+    .voice-btn:hover,
+    .call-btn:hover {
       background: #ffe0e6;
+    }
+
+    .voice-btn.recording {
+      background: #ff6b6b;
+      color: white;
+    }
+
+    .call-btn {
+      background: #4CAF50;
+      color: white;
     }
 
     .send-btn {
@@ -353,6 +420,7 @@
       border-radius: 24px;
       font-size: 16px;
       outline: none;
+      color: inherit;
     }
 
     /* === ПРОФИЛЬ СОБЕСЕДНИКА === */
@@ -408,8 +476,21 @@
       align-items: center;
     }
 
+    [data-theme="dark"] .setting-item,
+    [data-theme="coder"] .setting-item {
+      border-bottom: 1px solid #444;
+    }
+
     .setting-item:last-child {
       border-bottom: none;
+    }
+
+    select {
+      background: var(--rose-white);
+      border: 1px solid var(--rose-gray);
+      border-radius: 8px;
+      padding: 6px 10px;
+      color: inherit;
     }
 
     /* === АНИМАЦИИ === */
@@ -476,6 +557,8 @@
     </div>
     <div class="input-area">
       <button class="attach-btn" onclick="simulatePhotoSend()">📎</button>
+      <button class="voice-btn" id="voiceBtn" onclick="toggleVoiceRecording()">🎤</button>
+      <button class="call-btn" onclick="callUser()">📞</button>
       <input type="text" class="message-input" id="messageInput" placeholder="Сообщение..." onkeypress="if(event.key==='Enter') sendMessage()" />
       <button class="send-btn" onclick="sendMessage()">➤</button>
     </div>
@@ -513,7 +596,12 @@
     </div>
     <div class="setting-item">
       <span>Тема</span>
-      <span>Красная роза</span>
+      <select id="themeSelect" onchange="changeTheme(this.value)">
+        <option value="rose">Розовая</option>
+        <option value="dark">Тёмная</option>
+        <option value="purple">Фиолетовая</option>
+        <option value="coder">Кодерская</option>
+      </select>
     </div>
     <button class="btn" style="margin-top: 24px;" onclick="logout()">Выйти</button>
   </div>
@@ -579,7 +667,20 @@
     let currentUser = '';
     let currentChatUser = '';
     let allUsers = [];
+    let mediaRecorder = null;
+    let audioChunks = [];
 
+    // === ТЕМА ===
+    function changeTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('roseTheme', theme);
+    }
+
+    const savedTheme = localStorage.getItem('roseTheme') || 'rose';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    document.getElementById('themeSelect').value = savedTheme;
+
+    // === ПОДКЛЮЧЕНИЕ ===
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${window.location.host}`);
@@ -589,6 +690,8 @@
         const savedPass = localStorage.getItem('rosePass');
         if (savedUser && savedPass) {
           ws.send(JSON.stringify({ type: 'login', nickname: savedUser, password: savedPass }));
+        } else {
+          showScreen('authScreen');
         }
       };
 
@@ -597,7 +700,13 @@
         switch (msg.type) {
           case 'registered':
             alert('✅ Регистрация успешна!');
-            showScreen('authScreen');
+            localStorage.setItem('roseUser', msg.nickname);
+            localStorage.setItem('rosePass', document.getElementById('password').value);
+            ws.send(JSON.stringify({ 
+              type: 'login', 
+              nickname: msg.nickname, 
+              password: document.getElementById('password').value 
+            }));
             break;
 
           case 'loggedIn':
@@ -650,6 +759,7 @@
       };
     }
 
+    // === ВХОД / РЕГИСТРАЦИЯ ===
     function login() {
       const nick = document.getElementById('nickname').value.trim();
       const pass = document.getElementById('password').value;
@@ -670,6 +780,7 @@
       ws.send(JSON.stringify({ type: 'register', nickname: nick, password: pass }));
     }
 
+    // === СПИСОК ПОЛЬЗОВАТЕЛЕЙ ===
     function renderUserList(users) {
       const list = document.getElementById('chatsList');
       list.innerHTML = '';
@@ -701,6 +812,7 @@
       });
     }
 
+    // === ЧАТ ===
     function openChat(user) {
       currentChatUser = user;
       document.getElementById('currentChatName').textContent = user;
@@ -734,11 +846,15 @@
       const isSent = msg.from === currentUser;
       const div = document.createElement('div');
       div.className = `message ${isSent ? 'sent' : 'received'}`;
-      if (msg.image) {
-        div.innerHTML = `<img src="${msg.image}" alt="Фото"><div class="message-time">${new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>`;
+      let content = '';
+      if (msg.audio) {
+        content = `<audio controls src="${msg.audio}"></audio>`;
+      } else if (msg.image) {
+        content = `<img src="${msg.image}" alt="Фото">`;
       } else {
-        div.innerHTML = `<span class="message-text">${msg.text}</span><div class="message-time">${new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>`;
+        content = `<span class="message-text">${msg.text}</span>`;
       }
+      div.innerHTML = `${content}<div class="message-time">${new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>`;
       box.appendChild(div);
       box.scrollTop = box.scrollHeight;
     }
@@ -751,6 +867,7 @@
       input.value = '';
     }
 
+    // === ФОТО ===
     async function simulatePhotoSend() {
       const input = document.createElement('input');
       input.type = 'file';
@@ -769,6 +886,57 @@
       input.click();
     }
 
+    // === ГОЛОС ===
+    async function toggleVoiceRecording() {
+      const btn = document.getElementById('voiceBtn');
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        btn.classList.remove('recording');
+      } else {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          audioChunks = [];
+
+          mediaRecorder.ondataavailable = event => {
+            if (event.data.size > 0) audioChunks.push(event.data);
+          };
+
+          mediaRecorder.onstop = async () => {
+            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+            const res = await fetch('/upload', {
+              method: 'POST',
+              body: blob,
+              headers: { 'Content-Type': 'audio/webm' }
+            });
+            const { url } = await res.json();
+            ws.send(JSON.stringify({ type: 'sendMessage', to: currentChatUser, audio: url }));
+            stream.getTracks().forEach(track => track.stop());
+          };
+
+          mediaRecorder.start();
+          btn.classList.add('recording');
+        } catch (e) {
+          alert('Микрофон не доступен: ' + (e.message || 'разрешите доступ'));
+        }
+      }
+    }
+
+    // === ВЫЗОВ (временно текстовый) ===
+    function callUser() {
+      if (!currentChatUser) return;
+      const confirmed = confirm(`Вызвать ${currentChatUser}? (Это отправит уведомление)`);
+      if (confirmed) {
+        ws.send(JSON.stringify({ 
+          type: 'sendMessage', 
+          to: currentChatUser, 
+          text: `📞 ${currentUser} хочет позвонить вам!` 
+        }));
+        alert('Уведомление отправлено!');
+      }
+    }
+
+    // === ПРОФИЛЬ ===
     async function changeAvatar() {
       const input = document.createElement('input');
       input.type = 'file';
@@ -793,6 +961,7 @@
       showScreen('contactProfileScreen');
     }
 
+    // === НАВИГАЦИЯ ===
     function showScreen(screenId) {
       document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
       document.getElementById(screenId).classList.add('active');
@@ -808,6 +977,7 @@
       setTimeout(connectWebSocket, 1000);
     }
 
+    // === ЗАПУСК ===
     window.onload = () => {
       connectWebSocket();
     };
