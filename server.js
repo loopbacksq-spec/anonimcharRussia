@@ -4,23 +4,20 @@ const path = require('path');
 const fs = require('fs').promises;
 const { v4: uuidv4 } = require('uuid');
 const WebSocket = require('ws');
-const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Папки
 const UPLOAD_DIR = path.join(__dirname, 'public', 'uploads');
 const DATA_FILE = path.join(__dirname, 'data.json');
 
-// Убедимся, что папки существуют
 (async () => {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
 })();
 
-// Загрузка данных при старте
-let appData = { users: {}, chats: {} };
+// Загрузка данных
+let appData = { users: {}, chats: {} }; // chats: { userId: { [peerId]: [msg] } }
 loadData();
 
 async function loadData() {
@@ -28,11 +25,10 @@ async function loadData() {
     const data = await fs.readFile(DATA_FILE, 'utf8');
     appData = JSON.parse(data);
   } catch (e) {
-    console.log('Нет сохранённых данных — создаём новые');
+    console.log('Нет сохранённых данных');
   }
 }
 
-// Сохранение каждые 10 секунд
 setInterval(async () => {
   try {
     await fs.writeFile(DATA_FILE, JSON.stringify(appData, null, 2));
@@ -41,15 +37,14 @@ setInterval(async () => {
   }
 }, 10000);
 
-// CORS + статические файлы
-app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(UPLOAD_DIR));
+app.use(express.raw({ type: '*/*', limit: '5MB' }));
 
-// Обработка загрузки аватарок и фото
 app.post('/upload', express.raw({ type: '*/*', limit: '5MB' }), async (req, res) => {
   try {
-    const ext = req.get('Content-Type').split('/')[1] || 'jpg';
+    const contentType = req.get('Content-Type') || 'image/jpeg';
+    const ext = contentType.split('/')[1] || 'jpg';
     const filename = `${uuidv4()}.${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
     await fs.writeFile(filepath, req.body);
@@ -60,37 +55,50 @@ app.post('/upload', express.raw({ type: '*/*', limit: '5MB' }), async (req, res)
   }
 });
 
-// WebSocket логика
 const clients = new Map(); // socket → userId
 
 wss.on('connection', (ws) => {
   ws.on('message', async (data) => {
     try {
-      const msg = JSON.parse(data);
+      const msg = JSON.parse(data.toString());
       switch (msg.type) {
         case 'register':
-          const { nickname } = msg;
-          if (!nickname || nickname.length < 3 || nickname.length > 20) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Ник должен быть 3–20 символов' }));
+          const { nickname, password } = msg;
+          if (!nickname || nickname.length < 3 || nickname.length > 20 || !password) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Неверные данные' }));
             return;
           }
           if (appData.users[nickname]) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Этот ник уже занят!' }));
+            ws.send(JSON.stringify({ type: 'error', message: 'Ник занят!' }));
             return;
           }
-          appData.users[nickname] = { avatar: null };
+          appData.users[nickname] = { password, avatar: null };
           clients.set(ws, nickname);
           ws.send(JSON.stringify({ type: 'registered', nickname }));
-          broadcast({ type: 'userList', users: Object.keys(appData.users) });
+          break;
+
+        case 'login':
+          const { nickname: loginNick, password: loginPass } = msg;
+          const user = appData.users[loginNick];
+          if (!user || user.password !== loginPass) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Неверный пароль' }));
+            return;
+          }
+          clients.set(ws, loginNick);
+          ws.send(JSON.stringify({ type: 'loggedIn', nickname: loginNick, avatar: user.avatar }));
+          // Отправляем список чатов пользователя
+          const userChats = appData.chats[loginNick] || {};
+          const chatList = Object.keys(userChats).map(peer => ({
+            peer,
+            lastMessage: userChats[peer][userChats[peer].length - 1]
+          }));
+          ws.send(JSON.stringify({ type: 'chatList', chats: chatList }));
           break;
 
         case 'sendMessage':
           const { to, text, image } = msg;
           const from = clients.get(ws);
-          if (!from || !to) return;
-
-          const chatId = [from, to].sort().join('_');
-          if (!appData.chats[chatId]) appData.chats[chatId] = [];
+          if (!from || !to || !appData.users[to]) return;
 
           const message = {
             id: uuidv4(),
@@ -101,24 +109,54 @@ wss.on('connection', (ws) => {
             timestamp: Date.now()
           };
 
-          // Ограничиваем 20 сообщениями
-          appData.chats[chatId].push(message);
-          if (appData.chats[chatId].length > 20) {
-            appData.chats[chatId] = appData.chats[chatId].slice(-20);
+          // Убедимся, что чат существует у обоих
+          if (!appData.chats[from]) appData.chats[from] = {};
+          if (!appData.chats[to]) appData.chats[to] = {};
+
+          if (!appData.chats[from][to]) appData.chats[from][to] = [];
+          if (!appData.chats[to][from]) appData.chats[to][from] = [];
+
+          // Добавляем сообщение (макс 20)
+          appData.chats[from][to].push(message);
+          appData.chats[to][from].push(message);
+          if (appData.chats[from][to].length > 20) {
+            appData.chats[from][to] = appData.chats[from][to].slice(-20);
+            appData.chats[to][from] = appData.chats[to][from].slice(-20);
           }
 
-          // Отправляем получателю и отправителю
-          sendToUser(to, { type: 'newMessage', message });
+          // Отправляем обоим
           sendToUser(from, { type: 'newMessage', message });
+          sendToUser(to, { type: 'newMessage', message });
+
+          // Обновляем списки чатов
+          sendToUser(from, {
+            type: 'chatList',
+            chats: Object.keys(appData.chats[from]).map(p => ({
+              peer: p,
+              lastMessage: appData.chats[from][p][appData.chats[from][p].length - 1]
+            }))
+          });
+          sendToUser(to, {
+            type: 'chatList',
+            chats: Object.keys(appData.chats[to]).map(p => ({
+              peer: p,
+              lastMessage: appData.chats[to][p][appData.chats[to][p].length - 1]
+            }))
+          });
           break;
 
         case 'getChatHistory':
-          const { with: user } = msg;
+          const { with: peer } = msg;
           const requester = clients.get(ws);
-          if (!requester) return;
-          const histId = [requester, user].sort().join('_');
-          const history = appData.chats[histId] || [];
-          ws.send(JSON.stringify({ type: 'chatHistory', messages: history, with: user }));
+          if (!requester || !appData.chats[requester]?.[peer]) {
+            ws.send(JSON.stringify({ type: 'chatHistory', messages: [], with: peer }));
+            return;
+          }
+          ws.send(JSON.stringify({
+            type: 'chatHistory',
+            messages: appData.chats[requester][peer],
+            with: peer
+          }));
           break;
 
         case 'setAvatar':
@@ -126,12 +164,8 @@ wss.on('connection', (ws) => {
           const uid = clients.get(ws);
           if (uid && avatarUrl) {
             appData.users[uid].avatar = avatarUrl;
-            broadcast({ type: 'userList', users: Object.keys(appData.users) });
+            sendToUser(uid, { type: 'avatarUpdated', avatar: avatarUrl });
           }
-          break;
-
-        case 'getUserList':
-          ws.send(JSON.stringify({ type: 'userList', users: Object.keys(appData.users) }));
           break;
       }
     } catch (e) {
@@ -152,15 +186,6 @@ function sendToUser(userId, payload) {
   }
 }
 
-function broadcast(payload) {
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(payload));
-    }
-  });
-}
-
-// Запуск
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Rose Messenger запущен на порту ${PORT}`);
