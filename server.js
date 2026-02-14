@@ -18,7 +18,7 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 })();
 
 // Загружаем данные при старте
-let appData = { users: {}, chats: {} }; // chats: { userId: { peerId: [msg] } }
+let appData = { users: {}, chats: {} };
 loadData();
 
 async function loadData() {
@@ -80,6 +80,16 @@ wss.on('connection', (ws) => {
           }
           appData.users[nickname] = { password, avatar: null };
           ws.send(JSON.stringify({ type: 'registered', nickname }));
+
+          // Оповестить всех онлайн о новом пользователе
+          wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              const clientId = clients.get(client);
+              if (clientId && clientId !== nickname) {
+                client.send(JSON.stringify({ type: 'newUser', user: nickname }));
+              }
+            }
+          });
           break;
 
         // === ВХОД ===
@@ -94,7 +104,7 @@ wss.on('connection', (ws) => {
             ws.send(JSON.stringify({ type: 'error', message: 'Неверный пароль' }));
             return;
           }
-          // Успешный вход
+
           clients.set(ws, loginNick);
           ws.send(JSON.stringify({
             type: 'loggedIn',
@@ -102,13 +112,9 @@ wss.on('connection', (ws) => {
             avatar: user.avatar
           }));
 
-          // Отправляем список чатов пользователя
-          const userChats = appData.chats[loginNick] || {};
-          const chatList = Object.keys(userChats).map(peer => ({
-            peer,
-            lastMessage: userChats[peer][userChats[peer].length - 1]
-          }));
-          ws.send(JSON.stringify({ type: 'chatList', chats: chatList }));
+          // Отправить список всех пользователей (кроме себя)
+          const allUsers = Object.keys(appData.users).filter(u => u !== loginNick);
+          ws.send(JSON.stringify({ type: 'userList', users: allUsers }));
           break;
 
         // === ОТПРАВКА СООБЩЕНИЯ ===
@@ -144,13 +150,9 @@ wss.on('connection', (ws) => {
             appData.chats[to][from] = appData.chats[to][from].slice(-20);
           }
 
-          // Отправка
+          // Отправка сообщения
           sendToUser(from, { type: 'newMessage', message });
           sendToUser(to, { type: 'newMessage', message });
-
-          // Обновление списков чатов
-          updateChatList(from);
-          updateChatList(to);
           break;
 
         // === ИСТОРИЯ ЧАТА ===
@@ -196,15 +198,6 @@ function sendToUser(userId, payload) {
       client.send(JSON.stringify(payload));
     }
   }
-}
-
-function updateChatList(userId) {
-  if (!appData.chats[userId]) return;
-  const chatList = Object.keys(appData.chats[userId]).map(peer => ({
-    peer,
-    lastMessage: appData.chats[userId][peer][appData.chats[userId][peer].length - 1]
-  }));
-  sendToUser(userId, { type: 'chatList', chats: chatList });
 }
 
 // Запуск
