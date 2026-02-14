@@ -460,7 +460,7 @@
       <input type="text" class="search-input" placeholder="Поиск..." oninput="filterChats(this.value)" />
     </div>
     <div class="chats-list" id="chatsList">
-      <!-- Чаты подгружаются с сервера -->
+      <!-- Список пользователей -->
     </div>
   </div>
 
@@ -578,6 +578,7 @@
     let ws;
     let currentUser = '';
     let currentChatUser = '';
+    let allUsers = [];
 
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -612,8 +613,16 @@
             alert('❌ ' + msg.message);
             break;
 
-          case 'chatList':
-            renderChatList(msg.chats);
+          case 'userList':
+            allUsers = msg.users;
+            renderUserList(allUsers);
+            break;
+
+          case 'newUser':
+            if (msg.user !== currentUser && !allUsers.includes(msg.user)) {
+              allUsers.push(msg.user);
+              renderUserList(allUsers);
+            }
             break;
 
           case 'chatHistory':
@@ -628,8 +637,6 @@
             if (isForCurrentChat) {
               appendMessage(msg.message);
             }
-            // Обновить список чатов
-            requestChatList();
             break;
 
           case 'avatarUpdated':
@@ -663,24 +670,24 @@
       ws.send(JSON.stringify({ type: 'register', nickname: nick, password: pass }));
     }
 
-    function renderChatList(chats) {
+    function renderUserList(users) {
       const list = document.getElementById('chatsList');
       list.innerHTML = '';
-      if (chats.length === 0) {
-        list.innerHTML = '<p style="text-align:center;color:#888;margin-top:20px;">Нет чатов</p>';
+      if (users.length === 0) {
+        list.innerHTML = '<p style="text-align:center;color:#888;margin-top:20px;">Нет других пользователей</p>';
         return;
       }
-      chats.forEach(item => {
+      users.forEach(user => {
         const el = document.createElement('div');
         el.className = 'chat-item';
         el.innerHTML = `
-          <div class="avatar">${item.peer[0].toUpperCase()}</div>
+          <div class="avatar">${user[0].toUpperCase()}</div>
           <div class="chat-info">
-            <h3>${item.peer}</h3>
-            <p>${item.lastMessage.image ? '[Фото]' : (item.lastMessage.text || '')}</p>
+            <h3>${user}</h3>
+            <p>Нажмите, чтобы написать</p>
           </div>
         `;
-        el.onclick = () => openChat(item.peer);
+        el.onclick = () => openChat(user);
         list.appendChild(el);
       });
     }
@@ -799,13 +806,6 @@
       if (ws) ws.close();
       showScreen('authScreen');
       setTimeout(connectWebSocket, 1000);
-    }
-
-    function requestChatList() {
-      const pass = localStorage.getItem('rosePass');
-      if (currentUser && pass) {
-        ws.send(JSON.stringify({ type: 'login', nickname: currentUser, password: pass }));
-      }
     }
 
     window.onload = () => {
